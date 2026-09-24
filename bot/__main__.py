@@ -30,6 +30,16 @@ async def set_commands(bot: Bot) -> None:
             logging.warning("Не удалось настроить меню юриста %s: %s", lawyer_id, e)
 
 
+async def set_description(bot: Bot) -> None:
+    """Текст в пустом чате до «Начать» и в профиле бота — из texts.py, чтобы менять под фирму вместе с остальным."""
+    demo = config.DEMO_MODE
+    try:
+        await bot.set_my_description(texts.DEMO_DESCRIPTION if demo else texts.DESCRIPTION)
+        await bot.set_my_short_description(texts.DEMO_SHORT_DESCRIPTION if demo else texts.SHORT_DESCRIPTION)
+    except TelegramAPIError as e:  # не критично: бот работает и без описания
+        logging.warning("Не удалось обновить описание бота: %s", e)
+
+
 async def main() -> None:
     # Лог и в окно, и в файл bot.log: по файлу потом видно, что происходило, когда окно уже закрыто.
     # Файл до 1 МБ, плюс 3 старых — чтобы лог не разрастался бесконечно
@@ -53,6 +63,7 @@ async def main() -> None:
     # parse_mode=HTML — чтобы в текстах работали <b>жирный</b> и <i>курсив</i>
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     await set_commands(bot)
+    await set_description(bot)
 
     # Раз в минуту проверяем, кому пора напомнить. Сами условия — в reminders.py
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)

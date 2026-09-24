@@ -25,6 +25,7 @@ os.environ.update({
     "REMIND_FROM": "10",
     "REMIND_TO": "20",
     "UNSUBMITTED_AFTER_MINUTES": "30",
+    "DEMO_MODE": "false",  # демо включают отдельные тесты в test_demo.py
 })
 
 import pytest  # noqa: E402

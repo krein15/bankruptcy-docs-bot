@@ -39,6 +39,13 @@ def test_reminder_lists_only_missing_and_rejected():
     assert "❌ ИНН — вернули: <i>Размыто</i>" in text
 
 
+def test_bot_descriptions_fit_telegram_limits():
+    for text in (texts.DESCRIPTION, texts.DEMO_DESCRIPTION):
+        assert len(text) <= 512
+    for text in (texts.SHORT_DESCRIPTION, texts.DEMO_SHORT_DESCRIPTION):
+        assert len(text) <= 120
+
+
 def test_time_shown_in_firm_timezone():
     assert texts.fmt_time("2026-09-24T17:00:00+00:00") == "24.09.2026 20:00"  # Москва = UTC+3
     assert texts.fmt_time(None) == "—"
