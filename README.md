@@ -6,7 +6,7 @@
 
 <br>
 
-<a href="https://t.me/documents_bfl_bot"><img src="https://img.shields.io/badge/%D0%9F%D0%BE%D0%BF%D1%80%D0%BE%D0%B1%D0%BE%D0%B2%D0%B0%D1%82%D1%8C_%D0%B1%D0%BE%D1%82%D0%B0_%D0%B2_Telegram-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Попробовать бота в Telegram" height="48"></a>
+<a href="https://t.me/documents_bfl_bot"><img src="https://img.shields.io/badge/%D0%9F%D0%BE%D0%BF%D1%80%D0%BE%D0%B1%D0%BE%D0%B2%D0%B0%D1%82%D1%8C_%D0%B1%D0%BE%D1%82%D0%B0_%D0%B2_Telegram-26A5E4?style=for-the-badge&logo=telegram&logoColor=white" alt="Попробовать бота в Telegram" width="380"></a>
 
 ### 👉 [@documents_bfl_bot](https://t.me/documents_bfl_bot) — пройдите путь клиента и юриста за 2 минуты
 
