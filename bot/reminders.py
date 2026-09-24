@@ -6,7 +6,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import InlineKeyboardMarkup
 
-from bot import db, keyboards as kb, texts
+from bot import config, db, keyboards as kb, texts
 from bot.checklist import BY_ID, is_complete
 from bot.config import REMIND_AFTER_HOURS, REMIND_FROM, REMIND_MAX, REMIND_TO, TIMEZONE, UNSUBMITTED_AFTER_MINUTES
 
@@ -63,7 +63,9 @@ async def remind_silent(bot: Bot) -> None:
 
 
 async def check_reminders(bot: Bot) -> None:
-    if not is_daytime():
+    # В демо сами не пишем: посетитель — юрист, который смотрит бота, а не должник.
+    # Напоминание можно увидеть кнопкой «Напомнить клиенту» в своей карточке.
+    if config.DEMO_MODE or not is_daytime():
         return
     await remind_unsubmitted(bot)
     await remind_silent(bot)

@@ -10,16 +10,19 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BotCommand, BotCommandScopeChat
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from bot import db, reminders, texts
+from bot import config, db, reminders, texts
 from bot.checklist import CHECKLIST
 from bot.config import BASE_DIR, BOT_TOKEN, LAWYER_IDS, REMIND_FROM, REMIND_TO, TIMEZONE
 from bot.handlers import client, lawyer
 
 
 async def set_commands(bot: Bot) -> None:
-    """Меню команд: клиенты видят свои, юристы — ещё и /clients, /export."""
-    await bot.set_my_commands([BotCommand(command=c, description=d) for c, d in texts.COMMANDS])
-    lawyer_commands = [BotCommand(command=c, description=d) for c, d in texts.LAWYER_COMMANDS]
+    """Меню команд: клиенты видят свои, юристы — ещё и /clients, /export. В демо все видят всё."""
+    default = texts.DEMO_COMMANDS if config.DEMO_MODE else texts.COMMANDS
+    await bot.set_my_commands([BotCommand(command=c, description=d) for c, d in default])
+    # Личное меню юристов Telegram хранит отдельно — перезаписываем и его, иначе в демо осталось бы старое
+    personal = texts.DEMO_COMMANDS if config.DEMO_MODE else texts.LAWYER_COMMANDS
+    lawyer_commands = [BotCommand(command=c, description=d) for c, d in personal]
     for lawyer_id in LAWYER_IDS:
         try:
             await bot.set_my_commands(lawyer_commands, scope=BotCommandScopeChat(chat_id=lawyer_id))
@@ -39,7 +42,9 @@ async def main() -> None:
         ],
     )
     logging.getLogger("apscheduler").setLevel(logging.WARNING)  # иначе две строки в лог каждую минуту
-    if not LAWYER_IDS:
+    if config.DEMO_MODE:
+        logging.warning("ДЕМО-РЕЖИМ: каждый посетитель сам себе юрист, автоматических напоминаний нет")
+    elif not LAWYER_IDS:
         logging.warning("LAWYER_IDS пуст — документы на проверку никому не придут")
 
     db.init_db()

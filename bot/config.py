@@ -12,8 +12,22 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN не найден, проверьте файл .env")
 
-# Telegram ID юристов через запятую: им приходят документы на проверку
+# Telegram ID юристов через запятую: им приходят документы на проверку.
+# В демо-режиме — ID владельца: ему приходят уведомления о новых посетителях.
 LAWYER_IDS = {int(x) for x in os.getenv("LAWYER_IDS", "").replace(" ", "").split(",") if x}
+
+# Демо-режим для витрины: каждый посетитель сам себе клиент и юрист и видит только свои данные
+DEMO_MODE = os.getenv("DEMO_MODE", "false").strip().lower() in ("1", "true", "yes")
+
+
+def is_lawyer(user_id: int) -> bool:
+    # DEMO_MODE читается при каждом вызове, поэтому тесты могут включать демо на лету
+    return DEMO_MODE or user_id in LAWYER_IDS
+
+
+def is_demo_client(client_id: int) -> bool:
+    """Вымышленные клиенты из scripts/seed_demo.py — с отрицательными ID, у настоящих ID всегда > 0."""
+    return client_id < 0
 
 DB_PATH = BASE_DIR / os.getenv("DB_PATH", "bot.db")
 

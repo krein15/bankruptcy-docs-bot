@@ -9,19 +9,45 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
-    BufferedInputFile, CallbackQuery, InlineKeyboardMarkup, InputMediaDocument, InputMediaPhoto, Message,
+    BufferedInputFile, CallbackQuery, InlineKeyboardMarkup, InputMediaDocument, InputMediaPhoto, Message, User,
 )
 
-from bot import db, export, keyboards as kb, reminders, texts
+from bot import config, db, export, keyboards as kb, reminders, texts
 from bot.checklist import BY_ID, in_review, is_complete
-from bot.config import LAWYER_IDS, TIMEZONE
+from bot.config import LAWYER_IDS, TIMEZONE, is_demo_client, is_lawyer
 
 CLIENTS_LIMIT = 50  # больше кнопок в одном сообщении неудобно листать; остальные — в Excel
 
 router = Router()
+
+
+def _from_lawyer(event: Message | CallbackQuery) -> bool:
+    return is_lawyer(event.from_user.id)
+
+
 # Весь этот роутер — только для юристов. Остальные сообщения уходят дальше, в client.py
-router.message.filter(F.from_user.id.in_(LAWYER_IDS))
-router.callback_query.filter(F.from_user.id.in_(LAWYER_IDS))
+router.message.filter(_from_lawyer)
+router.callback_query.filter(_from_lawyer)
+
+
+def can_see(lawyer_id: int, client_id: int) -> bool:
+    """Обычно юрист видит всех клиентов. В демо — только себя и вымышленных клиентов,
+    чтобы посетители не видели данных друг друга. Проверяем при каждом нажатии:
+    данные кнопки можно подделать, поэтому доверять им нельзя."""
+    if not config.DEMO_MODE:
+        return True
+    return client_id == lawyer_id or is_demo_client(client_id)
+
+
+async def _denied(callback: CallbackQuery, client_id: int) -> bool:
+    if can_see(callback.from_user.id, client_id):
+        return False
+    await callback.answer(texts.STALE_BUTTON, show_alert=True)
+    return True
+
+
+def _visible_clients(lawyer_id: int) -> list:
+    return [client for client in db.get_clients() if can_see(lawyer_id, client["id"])]
 
 
 class Review(StatesGroup):
@@ -38,13 +64,27 @@ def _review_text(client, doc_id: str, count: int) -> str:
 
 
 async def notify_lawyers(bot: Bot, client, doc_id: str, count: int) -> None:
-    """Сообщает всем юристам, что клиент прислал документ на проверку."""
+    """Сообщает всем юристам, что клиент прислал документ на проверку.
+    В демо «юрист» — сам посетитель: чужие файлы владельцу бота не приходят."""
     text = _review_text(client, doc_id, count)
-    for lawyer_id in LAWYER_IDS:
+    recipients = [client["id"]] if config.DEMO_MODE else LAWYER_IDS
+    for lawyer_id in recipients:
         try:
             await bot.send_message(lawyer_id, text, reply_markup=kb.review(client["id"], doc_id))
         except TelegramAPIError as e:  # например, юрист ни разу не открывал бота
             logging.warning("Не удалось уведомить юриста %s: %s", lawyer_id, e)
+
+
+async def notify_demo_visitor(bot: Bot, user: User) -> None:
+    """Демо: сообщить владельцу, что бота открыл новый человек, — это потенциальный заказчик."""
+    name = f'<a href="tg://user?id={user.id}">{escape(user.full_name)}</a>'
+    if user.username:
+        name += f" (@{user.username})"
+    for owner_id in LAWYER_IDS - {user.id}:
+        try:
+            await bot.send_message(owner_id, texts.DEMO_NEW_VISITOR.format(name=name))
+        except TelegramAPIError as e:
+            logging.warning("Не удалось сообщить владельцу %s о посетителе: %s", owner_id, e)
 
 
 async def notify_client(bot: Bot, client_id: int, text: str,
@@ -83,6 +123,8 @@ async def _still_in_review(callback: CallbackQuery, client_id: int, doc_id: str)
 @router.callback_query(kb.ReviewCallback.filter(F.action.in_({"files", "open"})))
 async def show_files(callback: CallbackQuery, callback_data: kb.ReviewCallback, bot: Bot):
     client_id, doc_id = callback_data.client_id, callback_data.doc_id
+    if await _denied(callback, client_id):
+        return
     files = db.get_files(client_id, doc_id)
     if not files or doc_id not in BY_ID:
         await callback.answer(texts.FILES_GONE, show_alert=True)
@@ -102,7 +144,7 @@ async def show_files(callback: CallbackQuery, callback_data: kb.ReviewCallback, 
 @router.callback_query(kb.ReviewCallback.filter(F.action == "accept"))
 async def accept(callback: CallbackQuery, callback_data: kb.ReviewCallback, bot: Bot):
     client_id, doc_id = callback_data.client_id, callback_data.doc_id
-    if not await _still_in_review(callback, client_id, doc_id):
+    if await _denied(callback, client_id) or not await _still_in_review(callback, client_id, doc_id):
         return
 
     db.set_status(client_id, doc_id, "accepted")
@@ -121,7 +163,7 @@ async def accept(callback: CallbackQuery, callback_data: kb.ReviewCallback, bot:
 @router.callback_query(kb.ReviewCallback.filter(F.action == "reject"))
 async def ask_reject_reason(callback: CallbackQuery, callback_data: kb.ReviewCallback, state: FSMContext):
     client_id, doc_id = callback_data.client_id, callback_data.doc_id
-    if not await _still_in_review(callback, client_id, doc_id):
+    if await _denied(callback, client_id) or not await _still_in_review(callback, client_id, doc_id):
         return
 
     await state.set_state(Review.reason)
@@ -170,8 +212,8 @@ async def reject_with_reason(message: Message, state: FSMContext, bot: Bot):
 
 # ---------- клиенты ----------
 
-async def _send_clients(message: Message) -> None:
-    clients = db.get_clients()
+async def _send_clients(message: Message, lawyer_id: int) -> None:
+    clients = _visible_clients(lawyer_id)
     if not clients:
         await message.answer(texts.NO_CLIENTS)
         return
@@ -188,17 +230,19 @@ async def _send_clients(message: Message) -> None:
 
 @router.message(Command("clients"))
 async def clients_command(message: Message):
-    await _send_clients(message)
+    await _send_clients(message, message.from_user.id)
 
 
 @router.callback_query(F.data == "clients")
 async def clients_button(callback: CallbackQuery):
     await callback.answer()
-    await _send_clients(callback.message)
+    await _send_clients(callback.message, callback.from_user.id)
 
 
 @router.callback_query(kb.ClientCallback.filter(F.action == "open"))
 async def client_card(callback: CallbackQuery, callback_data: kb.ClientCallback):
+    if await _denied(callback, callback_data.client_id):
+        return
     client = db.get_client(callback_data.client_id)
     if client is None:
         await callback.answer(texts.STALE_BUTTON)
@@ -214,9 +258,14 @@ async def client_card(callback: CallbackQuery, callback_data: kb.ClientCallback)
 
 @router.callback_query(kb.ClientCallback.filter(F.action == "remind"))
 async def remind_client(callback: CallbackQuery, callback_data: kb.ClientCallback, bot: Bot):
+    if await _denied(callback, callback_data.client_id):
+        return
     client = db.get_client(callback_data.client_id)
     if client is None:
         await callback.answer(texts.STALE_BUTTON)
+        return
+    if is_demo_client(client["id"]):
+        await callback.answer(texts.DEMO_FAKE_REMIND, show_alert=True)
         return
     if is_complete(db.get_statuses(client["id"])):
         await callback.answer(texts.NOTHING_TO_REMIND, show_alert=True)
@@ -227,8 +276,8 @@ async def remind_client(callback: CallbackQuery, callback_data: kb.ClientCallbac
 
 # ---------- выгрузка в Excel ----------
 
-async def _send_export(message: Message) -> None:
-    clients = db.get_clients()
+async def _send_export(message: Message, lawyer_id: int) -> None:
+    clients = _visible_clients(lawyer_id)
     if not clients:
         await message.answer(texts.NO_CLIENTS)
         return
@@ -242,10 +291,10 @@ async def _send_export(message: Message) -> None:
 
 @router.message(Command("export"))
 async def export_command(message: Message):
-    await _send_export(message)
+    await _send_export(message, message.from_user.id)
 
 
 @router.callback_query(F.data == "export")
 async def export_button(callback: CallbackQuery):
     await callback.answer()
-    await _send_export(callback.message)
+    await _send_export(callback.message, callback.from_user.id)

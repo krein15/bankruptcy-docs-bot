@@ -6,11 +6,11 @@ from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandStart, Filter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 
-from bot import db, keyboards as kb, texts
+from bot import config, db, keyboards as kb, texts
 from bot.checklist import BY_ID
-from bot.handlers.lawyer import notify_lawyers
+from bot.handlers.lawyer import notify_demo_visitor, notify_lawyers
 
 router = Router()
 
@@ -70,7 +70,8 @@ async def ask_next_step(message: Message, client) -> None:
     if stage == "new":
         await message.answer(texts.NEED_START)
     elif stage == "consent":
-        await message.answer(texts.START, reply_markup=kb.consent())
+        intro = texts.DEMO_INTRO if config.DEMO_MODE else ""
+        await message.answer(intro + texts.START, reply_markup=kb.consent())
     elif stage == "name":
         await message.answer(texts.ASK_NAME)
     elif stage == "phone":
@@ -79,10 +80,19 @@ async def ask_next_step(message: Message, client) -> None:
         await message.answer(texts.UNKNOWN, reply_markup=kb.main_menu())
 
 
+async def finish_registration(message: Message) -> None:
+    await message.answer(texts.REGISTERED + texts.status_text({}), reply_markup=kb.main_menu())
+    await message.answer(texts.PHOTO_RULES)
+    if config.DEMO_MODE:
+        await message.answer(texts.DEMO_HINT)
+
+
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext):
+async def cmd_start(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
-    db.create_client(message.from_user.id)
+    is_new = db.create_client(message.from_user.id)
+    if is_new and config.DEMO_MODE:
+        await notify_demo_visitor(bot, message.from_user)
     client = db.get_client(message.from_user.id)
     if client_stage(client) == "ready":
         statuses = db.get_statuses(client["id"])
@@ -107,6 +117,11 @@ async def on_name(message: Message):
         await message.answer(texts.NAME_INVALID)
         return
     db.set_name(message.from_user.id, full_name)
+    if config.DEMO_MODE:
+        # В демо телефон не спрашиваем: посетитель не обязан давать номер, чтобы посмотреть бота
+        db.set_phone(message.from_user.id, texts.DEMO_PHONE)
+        await finish_registration(message)
+        return
     await ask_next_step(message, db.get_client(message.from_user.id))
 
 
@@ -119,8 +134,19 @@ async def on_phone(message: Message):
         return
     phone = message.contact.phone_number
     db.set_phone(message.from_user.id, phone if phone.startswith("+") else "+" + phone)
-    await message.answer(texts.REGISTERED + texts.status_text({}), reply_markup=kb.main_menu())
-    await message.answer(texts.PHOTO_RULES)
+    await finish_registration(message)
+
+
+def demo_only(_) -> bool:
+    return config.DEMO_MODE
+
+
+@router.message(Command("reset"), demo_only)
+async def demo_reset(message: Message, state: FSMContext):
+    """Демо: удалить свои данные и пройти всё заново."""
+    await state.clear()
+    db.delete_client(message.from_user.id)
+    await message.answer(texts.DEMO_RESET_DONE, reply_markup=ReplyKeyboardRemove())
 
 
 # ---------- меню ----------

@@ -89,12 +89,35 @@ def get_clients() -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def create_client(user_id: int) -> None:
+def create_client(user_id: int) -> bool:
+    """Создаёт клиента, если его ещё нет. True — клиент новый."""
     with _conn:
-        _conn.execute(
+        cur = _conn.execute(
             "INSERT OR IGNORE INTO clients (id, created_at, last_activity_at) VALUES (?, ?, ?)",
             (user_id, _now(), _now()),
         )
+    return cur.rowcount == 1
+
+
+def delete_client(user_id: int) -> None:
+    """Удаляет клиента со всеми документами и файлами (демо: «начать заново»)."""
+    with _conn:
+        _conn.execute("DELETE FROM files WHERE client_id = ?", (user_id,))
+        _conn.execute("DELETE FROM documents WHERE client_id = ?", (user_id,))
+        _conn.execute("DELETE FROM clients WHERE id = ?", (user_id,))
+
+
+def delete_demo_clients() -> int:
+    """Удаляет вымышленных клиентов (ID < 0). Возвращает, сколько удалили."""
+    with _conn:
+        _conn.execute("DELETE FROM files WHERE client_id < 0")
+        _conn.execute("DELETE FROM documents WHERE client_id < 0")
+        return _conn.execute("DELETE FROM clients WHERE id < 0").rowcount
+
+
+def set_last_activity(client_id: int, moment: datetime) -> None:
+    with _conn:
+        _conn.execute("UPDATE clients SET last_activity_at = ? WHERE id = ?", (_iso(moment), client_id))
 
 
 def set_consent(user_id: int) -> None:
@@ -128,6 +151,7 @@ def get_clients_to_remind(silent_since: datetime, max_reminders: int) -> list[sq
     return _conn.execute(
         """SELECT * FROM clients
            WHERE phone IS NOT NULL
+             AND id > 0  -- вымышленным клиентам из демо не пишем
              AND last_activity_at < ?
              AND (last_reminder_at IS NULL OR last_reminder_at < ?)
              AND reminders_sent < ?""",
@@ -153,6 +177,7 @@ def get_unsubmitted(silent_since: datetime) -> list[sqlite3.Row]:
            JOIN clients c ON c.id = f.client_id
            LEFT JOIN documents d ON d.client_id = f.client_id AND d.doc_id = f.doc_id
            WHERE f.archived = 0
+             AND f.client_id > 0
              AND (d.status IS NULL OR d.status IN ('rejected', 'na'))
              AND c.last_activity_at < ?
              AND (c.unsubmitted_reminded_at IS NULL OR c.unsubmitted_reminded_at < c.last_activity_at)
