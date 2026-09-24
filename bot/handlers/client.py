@@ -1,4 +1,5 @@
 """Сторона клиента: регистрация, приём файлов, статус."""
+import logging
 from html import escape
 
 from aiogram import Bot, F, Router
@@ -177,7 +178,10 @@ async def start_upload(callback: CallbackQuery, callback_data: kb.DocCallback, s
 @router.message(Stage("ready"), Upload.files, F.photo | F.document)
 async def receive_file(message: Message, client, state: FSMContext):
     doc_id = (await state.get_data())["doc_id"]
-    saved = db.add_file(client["id"], doc_id, *file_info(message))
+    info = file_info(message)
+    saved = db.add_file(client["id"], doc_id, *info)
+    logging.info("Файл от клиента %s: %s %s → %s%s", client["id"], info[2], info[3] or "", doc_id,
+                 "" if saved else " (дубль)")
     if not is_first_in_album(message):
         return
     if saved or message.media_group_id:
@@ -218,7 +222,9 @@ async def mark_not_applicable(callback: CallbackQuery, client, state: FSMContext
 @router.message(Stage("ready"), F.photo | F.document)
 async def receive_unsorted(message: Message, client):
     """Файл прислали, не выбрав документ. Сохраняем без пункта и спрашиваем, что это."""
-    db.add_file(client["id"], None, *file_info(message))
+    info = file_info(message)
+    db.add_file(client["id"], None, *info)
+    logging.info("Файл от клиента %s без выбора документа: %s %s", client["id"], info[2], info[3] or "")
     if is_first_in_album(message):
         markup = kb.documents(db.get_statuses(client["id"]), action="assign")
         await message.answer(texts.UNSORTED_ASK, reply_markup=markup)

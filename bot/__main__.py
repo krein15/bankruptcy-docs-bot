@@ -1,6 +1,7 @@
 """Точка входа. Запуск из папки проекта: python -m bot"""
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -9,12 +10,21 @@ from aiogram.types import BotCommand
 
 from bot import db, texts
 from bot.checklist import CHECKLIST
-from bot.config import BOT_TOKEN, LAWYER_IDS
+from bot.config import BASE_DIR, BOT_TOKEN, LAWYER_IDS
 from bot.handlers import client, lawyer
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # Лог и в окно, и в файл bot.log: по файлу потом видно, что происходило, когда окно уже закрыто.
+    # Файл до 1 МБ, плюс 3 старых — чтобы лог не разрастался бесконечно
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            RotatingFileHandler(BASE_DIR / "bot.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8"),
+        ],
+    )
     if not LAWYER_IDS:
         logging.warning("LAWYER_IDS пуст — документы на проверку никому не придут")
 
