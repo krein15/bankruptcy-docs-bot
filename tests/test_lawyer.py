@@ -130,6 +130,7 @@ async def test_long_client_list_is_truncated(ivan, petr, tg, lawyer_chat, monkey
 async def test_client_card(ivan_sent_passport, lawyer_chat):
     replies = await lawyer_chat.open_card(ivan_sent_passport.id)
     assert "Иванов Иван Иванович" in replies.text and "+79991234567" in replies.text
+    assert "(при наличии)" not in replies.text and "нужно прислать" not in replies.text, "карточка — компактная"
     assert "🕓 Паспорт (3)" in replies.buttons
     assert texts.BTN_REMIND in replies.buttons and texts.BTN_ALL_CLIENTS in replies.buttons
 

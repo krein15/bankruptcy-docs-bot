@@ -216,13 +216,14 @@ def fmt_time(iso: str | None) -> str:
     return datetime.fromisoformat(iso).astimezone(TIMEZONE).strftime("%d.%m.%Y %H:%M")
 
 
-def status_text(statuses: dict) -> str:
-    """Чек-лист клиента с иконками статусов и полосой прогресса."""
+def status_text(statuses: dict, compact: bool = False) -> str:
+    """Чек-лист клиента с иконками статусов и полосой прогресса.
+    compact — для юриста: без пометок «при наличии» и расшифровки значков, чтобы карточка влезала в экран."""
     lines = []
     for item in CHECKLIST:
         status = status_of(statuses, item["id"])
         line = f"{ICONS[status]} {escape(item['title'])}"
-        if status is None and not item["required"]:
+        if status is None and not item["required"] and not compact:
             line += " <i>(при наличии)</i>"
         if status == "rejected" and statuses[item["id"]]["comment"]:
             line += f"\n      ↳ <i>{escape(statuses[item['id']]['comment'])}</i>"
@@ -230,8 +231,8 @@ def status_text(statuses: dict) -> str:
 
     done, total = progress(statuses)
     filled = round(10 * done / total)
-    header = f"<b>Готово {done} из {total}</b>  {'▓' * filled}{'░' * (10 - filled)}\n\n"
-    return header + "\n".join(lines) + STATUS_LEGEND
+    header = f"<b>Готово {done} из {total}</b>  {'▰' * filled}{'▱' * (10 - filled)}\n\n"
+    return header + "\n".join(lines) + ("" if compact else STATUS_LEGEND)
 
 
 def reminder_text(statuses: dict) -> str:
@@ -265,7 +266,7 @@ def client_card(client, statuses: dict, has_files: bool) -> str:
         created=fmt_time(client["created_at"]),
         activity=fmt_time(client["last_activity_at"]),
         reminders=client["reminders_sent"],
-    ) + status_text(statuses)
+    ) + status_text(statuses, compact=True)
     return text + CLIENT_CARD_FILES_HINT if has_files else text
 
 
