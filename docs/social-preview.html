@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<!-- Исходник картинки docs/social-preview.png (1280×640) — её показывают Telegram и почта при отправке ссылки.
+     Перерисовать: msedge --headless --screenshot=docs/social-preview.png --window-size=1280,640 docs/social-preview.html -->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 1280px; height: 640px; overflow: hidden;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    background: radial-gradient(circle at 85% 20%, #1d4f7a 0%, #0e2233 55%, #0a1824 100%);
+    color: #fff;
+    display: flex; align-items: center; gap: 56px;
+    padding: 0 72px;
+  }
+  .left { flex: 1; }
+  .tag {
+    display: inline-block; font-size: 22px; font-weight: 600; letter-spacing: .5px;
+    color: #8fd3ff; background: rgba(42,171,238,.15); border: 1px solid rgba(42,171,238,.4);
+    padding: 6px 16px; border-radius: 999px; margin-bottom: 28px;
+  }
+  h1 { font-size: 60px; line-height: 1.08; font-weight: 700; margin-bottom: 24px; }
+  h1 span { color: #2AABEE; }
+  p { font-size: 26px; line-height: 1.4; color: #c5d6e4; margin-bottom: 36px; max-width: 620px; }
+  .cta {
+    display: inline-flex; align-items: center; gap: 14px;
+    background: #2AABEE; color: #fff; font-size: 26px; font-weight: 600;
+    padding: 16px 30px; border-radius: 14px;
+  }
+  .cta svg { width: 30px; height: 30px; }
+  .chat {
+    width: 430px; background: #17212b; border-radius: 22px; padding: 26px 26px 20px;
+    box-shadow: 0 30px 80px rgba(0,0,0,.45);
+  }
+  .bubble { background: #182533; border: 1px solid #22303f; border-radius: 16px; padding: 20px 22px; font-size: 21px; line-height: 1.55; }
+  .bubble b { font-size: 22px; }
+  .bar { font-family: Consolas, monospace; color: #2AABEE; letter-spacing: 1px; }
+  .row { display: flex; gap: 10px; }
+  .muted { color: #8a9bab; font-size: 18px; margin-left: 34px; }
+  .note {
+    margin-top: 14px; background: #2b5278; border-radius: 16px; padding: 14px 18px; font-size: 19px; line-height: 1.45;
+  }
+  .buttons { display: flex; gap: 8px; margin-top: 10px; }
+  .buttons div { flex: 1; text-align: center; background: #22303f; border-radius: 10px; padding: 9px 0; font-size: 18px; }
+</style>
+</head>
+<body>
+  <div class="left">
+    <div class="tag">Telegram-бот для юрфирм</div>
+    <h1>Сбор документов<br>на <span>банкротство</span><br>физлиц</h1>
+    <p>Клиент присылает документы по чек-листу, бот следит за комплектностью и напоминает, юрист проверяет в один клик.</p>
+    <div class="cta">
+      <svg viewBox="0 0 24 24" fill="#fff"><path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71L12.6 16.3l-1.99 1.93c-.23.23-.42.42-.83.42z"/></svg>
+      Попробовать демо в Telegram
+    </div>
+  </div>
+  <div class="chat">
+    <div class="bubble">
+      <b>Готово 3 из 12</b> &nbsp;<span class="bar">▓▓▓░░░░░░░</span><br>
+      <div class="row">✅ Паспорт</div>
+      <div class="row">✅ СНИЛС</div>
+      <div class="row">🕓 ИНН</div>
+      <div class="row">❌ Справка 2-НДФЛ</div>
+      <div class="muted">↳ нужна за текущий год</div>
+      <div class="row">⬜ Сделки за 3 года</div>
+      <div class="row">➖ Свидетельство о браке</div>
+    </div>
+    <div class="note">📥 <b>Новые документы на проверку</b><br>Иванов&nbsp;И.&nbsp;И. · Паспорт · 4&nbsp;файла</div>
+    <div class="buttons"><div>✅ Принять</div><div>❌ Вернуть</div></div>
+  </div>
+</body>
+</html>
