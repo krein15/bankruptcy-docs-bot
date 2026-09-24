@@ -30,13 +30,21 @@ CHECKLIST = _load()
 BY_ID = {item["id"]: item for item in CHECKLIST}
 
 
+def status_of(statuses: dict, doc_id: str) -> str | None:
+    """Статус документа у клиента; None — ещё не прислан."""
+    row = statuses.get(doc_id)
+    return row["status"] if row else None
+
+
 def progress(statuses: dict) -> tuple[int, int]:
     """Сколько пунктов закрыто и сколько всего."""
-    done = sum(
-        1 for item in CHECKLIST
-        if item["id"] in statuses and statuses[item["id"]]["status"] in DONE_STATUSES
-    )
+    done = sum(1 for item in CHECKLIST if status_of(statuses, item["id"]) in DONE_STATUSES)
     return done, len(CHECKLIST)
+
+
+def in_review(statuses: dict) -> int:
+    """Сколько документов ждут проверки юриста."""
+    return sum(1 for item in CHECKLIST if status_of(statuses, item["id"]) == "review")
 
 
 def is_complete(statuses: dict) -> bool:

@@ -15,6 +15,21 @@ from bot.handlers.lawyer import notify_lawyers
 router = Router()
 
 
+@router.message.outer_middleware()
+@router.callback_query.outer_middleware()
+async def track_activity(handler, event: Message | CallbackQuery, data: dict):
+    """Middleware — прослойка перед обработчиками: срабатывает на каждое сообщение и кнопку клиента.
+    Любое действие клиента — это активность, от неё отсчитываются напоминания."""
+    db.touch(event.from_user.id)
+    return await handler(event, data)
+
+
+async def send_to_review(bot: Bot, client, doc_id: str, count: int) -> None:
+    """Документ уходит юристу: статус «на проверке» + уведомление."""
+    db.set_status(client["id"], doc_id, "review")
+    await notify_lawyers(bot, client, doc_id, count)
+
+
 class Upload(StatesGroup):
     files = State()  # клиент выбрал документ и присылает файлы; в данных — doc_id
 
@@ -121,14 +136,24 @@ async def show_rules(message: Message):
     await message.answer(texts.PHOTO_RULES)
 
 
-@router.message(Stage("ready"), F.text == texts.BTN_SEND)
-async def choose_document(message: Message, client, state: FSMContext):
+async def show_documents(message: Message, client, state: FSMContext) -> None:
     await state.clear()
     markup = kb.documents(db.get_statuses(client["id"]), action="upload")
     if not markup.inline_keyboard:
         await message.answer(texts.NOTHING_TO_SEND)
         return
     await message.answer(texts.CHOOSE_DOC, reply_markup=markup)
+
+
+@router.message(Stage("ready"), F.text == texts.BTN_SEND)
+async def choose_document(message: Message, client, state: FSMContext):
+    await show_documents(message, client, state)
+
+
+@router.callback_query(Stage("ready"), F.data == "send")  # кнопка из напоминания
+async def choose_document_from_reminder(callback: CallbackQuery, client, state: FSMContext):
+    await callback.answer()
+    await show_documents(callback.message, client, state)
 
 
 # ---------- приём файлов ----------
@@ -199,13 +224,30 @@ async def finish_upload(callback: CallbackQuery, client, state: FSMContext, bot:
         return
 
     await state.clear()
-    db.set_status(client["id"], doc_id, "review")
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.answer()
     await callback.message.answer(
         texts.SUBMITTED.format(title=escape(BY_ID[doc_id]["title"]), count=texts.files_count(count))
     )
-    await notify_lawyers(bot, client, doc_id, count)
+    await send_to_review(bot, client, doc_id, count)
+
+
+@router.callback_query(Stage("ready"), kb.DocCallback.filter(F.action == "submit"))
+async def submit_from_reminder(callback: CallbackQuery, callback_data: kb.DocCallback, client,
+                               state: FSMContext, bot: Bot):
+    """Кнопка «Отправить юристу» из напоминания — то же, что «Готово»."""
+    doc_id = callback_data.doc_id
+    count = db.count_files(client["id"], doc_id)
+    if doc_id not in BY_ID or count == 0 or db.get_status(client["id"], doc_id) in ("review", "accepted"):
+        await callback.answer(texts.STALE_BUTTON)
+        return
+    if (await state.get_data()).get("doc_id") == doc_id:
+        await state.clear()  # клиент ещё «в загрузке» этого документа — она закончена
+    await callback.answer()
+    await callback.message.answer(
+        texts.SUBMITTED.format(title=escape(BY_ID[doc_id]["title"]), count=texts.files_count(count))
+    )
+    await send_to_review(bot, client, doc_id, count)
 
 
 @router.callback_query(Stage("ready"), Upload.files, F.data == "upload:na")
@@ -241,11 +283,10 @@ async def assign_unsorted(callback: CallbackQuery, callback_data: kb.DocCallback
         await callback.message.edit_reply_markup(reply_markup=None)
         return
 
-    db.set_status(client["id"], item["id"], "review")
     count = db.count_files(client["id"], item["id"])
     await callback.message.edit_text(texts.ASSIGNED.format(title=escape(item["title"]), count=texts.files_count(count)))
     await callback.answer()
-    await notify_lawyers(bot, client, item["id"], count)
+    await send_to_review(bot, client, item["id"], count)
 
 
 # ---------- всё остальное ----------

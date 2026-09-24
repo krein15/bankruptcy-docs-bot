@@ -6,12 +6,25 @@ from logging.handlers import RotatingFileHandler
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import BotCommand
+from aiogram.exceptions import TelegramAPIError
+from aiogram.types import BotCommand, BotCommandScopeChat
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from bot import db, texts
+from bot import db, reminders, texts
 from bot.checklist import CHECKLIST
-from bot.config import BASE_DIR, BOT_TOKEN, LAWYER_IDS
+from bot.config import BASE_DIR, BOT_TOKEN, LAWYER_IDS, REMIND_FROM, REMIND_TO, TIMEZONE
 from bot.handlers import client, lawyer
+
+
+async def set_commands(bot: Bot) -> None:
+    """Меню команд: клиенты видят свои, юристы — ещё и /clients, /export."""
+    await bot.set_my_commands([BotCommand(command=c, description=d) for c, d in texts.COMMANDS])
+    lawyer_commands = [BotCommand(command=c, description=d) for c, d in texts.LAWYER_COMMANDS]
+    for lawyer_id in LAWYER_IDS:
+        try:
+            await bot.set_my_commands(lawyer_commands, scope=BotCommandScopeChat(chat_id=lawyer_id))
+        except TelegramAPIError as e:  # юрист ещё ни разу не открывал бота
+            logging.warning("Не удалось настроить меню юриста %s: %s", lawyer_id, e)
 
 
 async def main() -> None:
@@ -25,6 +38,7 @@ async def main() -> None:
             RotatingFileHandler(BASE_DIR / "bot.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8"),
         ],
     )
+    logging.getLogger("apscheduler").setLevel(logging.WARNING)  # иначе две строки в лог каждую минуту
     if not LAWYER_IDS:
         logging.warning("LAWYER_IDS пуст — документы на проверку никому не придут")
 
@@ -33,7 +47,13 @@ async def main() -> None:
 
     # parse_mode=HTML — чтобы в текстах работали <b>жирный</b> и <i>курсив</i>
     bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    await bot.set_my_commands([BotCommand(command=c, description=d) for c, d in texts.COMMANDS])
+    await set_commands(bot)
+
+    # Раз в минуту проверяем, кому пора напомнить. Сами условия — в reminders.py
+    scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+    scheduler.add_job(reminders.check_reminders, "interval", minutes=1, kwargs={"bot": bot})
+    scheduler.start()
+    logging.info("Напоминания: с %d:00 до %d:00 (%s)", REMIND_FROM, REMIND_TO, TIMEZONE)
 
     dp = Dispatcher()
     # Порядок важен: сначала роутер юриста, всё, что он не обработал, уходит клиентскому

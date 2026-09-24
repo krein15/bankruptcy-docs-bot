@@ -1,5 +1,6 @@
-"""Сторона юриста: уведомления о новых документах, «Принять» / «Вернуть»."""
+"""Сторона юриста: проверка документов, список клиентов, карточка клиента, выгрузка в Excel."""
 import logging
+from datetime import datetime
 from html import escape
 
 from aiogram import Bot, F, Router
@@ -7,11 +8,15 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InputMediaDocument, InputMediaPhoto, Message
+from aiogram.types import (
+    BufferedInputFile, CallbackQuery, InlineKeyboardMarkup, InputMediaDocument, InputMediaPhoto, Message,
+)
 
-from bot import db, keyboards as kb, texts
-from bot.checklist import BY_ID, is_complete
-from bot.config import LAWYER_IDS
+from bot import db, export, keyboards as kb, reminders, texts
+from bot.checklist import BY_ID, in_review, is_complete
+from bot.config import LAWYER_IDS, TIMEZONE
+
+CLIENTS_LIMIT = 50  # больше кнопок в одном сообщении неудобно листать; остальные — в Excel
 
 router = Router()
 # Весь этот роутер — только для юристов. Остальные сообщения уходят дальше, в client.py
@@ -23,14 +28,18 @@ class Review(StatesGroup):
     reason = State()  # юрист нажал «Вернуть» и пишет причину
 
 
-async def notify_lawyers(bot: Bot, client, doc_id: str, count: int) -> None:
-    """Сообщает всем юристам, что клиент прислал документ на проверку."""
-    text = texts.NEW_SUBMISSION.format(
+def _review_text(client, doc_id: str, count: int) -> str:
+    return texts.NEW_SUBMISSION.format(
         name=escape(client["full_name"]),
         phone=escape(client["phone"]),
         title=escape(BY_ID[doc_id]["title"]),
         count=count,
     )
+
+
+async def notify_lawyers(bot: Bot, client, doc_id: str, count: int) -> None:
+    """Сообщает всем юристам, что клиент прислал документ на проверку."""
+    text = _review_text(client, doc_id, count)
     for lawyer_id in LAWYER_IDS:
         try:
             await bot.send_message(lawyer_id, text, reply_markup=kb.review(client["id"], doc_id))
@@ -71,19 +80,23 @@ async def _still_in_review(callback: CallbackQuery, client_id: int, doc_id: str)
     return False
 
 
-@router.callback_query(kb.ReviewCallback.filter(F.action == "files"))
+@router.callback_query(kb.ReviewCallback.filter(F.action.in_({"files", "open"})))
 async def show_files(callback: CallbackQuery, callback_data: kb.ReviewCallback, bot: Bot):
-    files = db.get_files(callback_data.client_id, callback_data.doc_id)
-    if not files:
+    client_id, doc_id = callback_data.client_id, callback_data.doc_id
+    files = db.get_files(client_id, doc_id)
+    if not files or doc_id not in BY_ID:
         await callback.answer(texts.FILES_GONE, show_alert=True)
         return
     await callback.answer()
-    client = db.get_client(callback_data.client_id)
+    client = db.get_client(client_id)
     await callback.message.answer(texts.FILES_HEADER.format(
-        title=escape(BY_ID[callback_data.doc_id]["title"]),
+        title=escape(BY_ID[doc_id]["title"]),
         name=escape(client["full_name"]),
     ))
     await send_files(bot, callback.message.chat.id, files)
+    # Из карточки клиента: если документ ждёт проверки — сразу даём кнопки «Принять» / «Вернуть»
+    if callback_data.action == "open" and db.get_status(client_id, doc_id) == "review":
+        await callback.message.answer(_review_text(client, doc_id, len(files)), reply_markup=kb.review(client_id, doc_id))
 
 
 @router.callback_query(kb.ReviewCallback.filter(F.action == "accept"))
@@ -129,7 +142,7 @@ async def cancel_reject(message: Message, state: FSMContext):
     await message.answer(texts.REJECT_CANCELLED)
 
 
-@router.message(Review.reason, F.text)
+@router.message(Review.reason, F.text, ~F.text.startswith("/"))  # команды — не причина возврата
 async def reject_with_reason(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     await state.clear()
@@ -153,3 +166,86 @@ async def reject_with_reason(message: Message, state: FSMContext, bot: Bot):
         texts.DOC_REJECTED.format(title=escape(BY_ID[doc_id]["title"]), comment=escape(comment)),
         reply_markup=kb.resend(doc_id),
     )
+
+
+# ---------- клиенты ----------
+
+async def _send_clients(message: Message) -> None:
+    clients = db.get_clients()
+    if not clients:
+        await message.answer(texts.NO_CLIENTS)
+        return
+    all_statuses = db.get_all_statuses()
+    rows = [(client, all_statuses.get(client["id"], {})) for client in clients]
+    # Сверху те, у кого есть что проверить; внутри — по свежести (sort сохраняет порядок из базы)
+    rows.sort(key=lambda row: in_review(row[1]) == 0)
+
+    text = texts.CLIENTS_HEADER.format(count=len(rows))
+    if len(rows) > CLIENTS_LIMIT:
+        text += texts.CLIENTS_TRUNCATED.format(shown=CLIENTS_LIMIT)
+    await message.answer(text, reply_markup=kb.clients(rows[:CLIENTS_LIMIT]))
+
+
+@router.message(Command("clients"))
+async def clients_command(message: Message):
+    await _send_clients(message)
+
+
+@router.callback_query(F.data == "clients")
+async def clients_button(callback: CallbackQuery):
+    await callback.answer()
+    await _send_clients(callback.message)
+
+
+@router.callback_query(kb.ClientCallback.filter(F.action == "open"))
+async def client_card(callback: CallbackQuery, callback_data: kb.ClientCallback):
+    client = db.get_client(callback_data.client_id)
+    if client is None:
+        await callback.answer(texts.STALE_BUTTON)
+        return
+    statuses = db.get_statuses(client["id"])
+    file_counts = db.count_files_by_doc(client["id"])
+    await callback.answer()
+    await callback.message.answer(
+        texts.client_card(client, statuses, has_files=bool(file_counts)),
+        reply_markup=kb.client_card(client["id"], statuses, file_counts),
+    )
+
+
+@router.callback_query(kb.ClientCallback.filter(F.action == "remind"))
+async def remind_client(callback: CallbackQuery, callback_data: kb.ClientCallback, bot: Bot):
+    client = db.get_client(callback_data.client_id)
+    if client is None:
+        await callback.answer(texts.STALE_BUTTON)
+        return
+    if is_complete(db.get_statuses(client["id"])):
+        await callback.answer(texts.NOTHING_TO_REMIND, show_alert=True)
+        return
+    sent = await reminders.send_reminder(bot, client)
+    await callback.answer(texts.REMINDER_SENT if sent else texts.REMINDER_FAILED, show_alert=not sent)
+
+
+# ---------- выгрузка в Excel ----------
+
+async def _send_export(message: Message) -> None:
+    clients = db.get_clients()
+    if not clients:
+        await message.answer(texts.NO_CLIENTS)
+        return
+    date = datetime.now(TIMEZONE).strftime("%d.%m.%Y")
+    report = export.build_report(clients, db.get_all_statuses())
+    await message.answer_document(
+        BufferedInputFile(report, filename=texts.EXPORT_FILENAME.format(date=date)),
+        caption=texts.EXPORT_CAPTION.format(date=date),
+    )
+
+
+@router.message(Command("export"))
+async def export_command(message: Message):
+    await _send_export(message)
+
+
+@router.callback_query(F.data == "export")
+async def export_button(callback: CallbackQuery):
+    await callback.answer()
+    await _send_export(callback.message)

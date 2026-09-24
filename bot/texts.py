@@ -1,7 +1,9 @@
 """Все тексты бота. Чтобы переделать бота под фирму, правьте этот файл и checklist.json."""
+from datetime import datetime
 from html import escape
 
-from bot.checklist import CHECKLIST, progress
+from bot.checklist import CHECKLIST, in_review, progress, status_of
+from bot.config import TIMEZONE
 
 # ---------- кнопки ----------
 
@@ -16,10 +18,19 @@ BTN_RESEND = "📎 Отправить заново"
 BTN_FILES = "📎 Файлы"
 BTN_ACCEPT = "✅ Принять"
 BTN_REJECT = "❌ Вернуть"
+BTN_SUBMIT = "📤 Отправить юристу: {title} ({count})"
+BTN_REMIND = "🔔 Напомнить клиенту"
+BTN_ALL_CLIENTS = "⬅️ Все клиенты"
+BTN_EXPORT = "📊 Выгрузить в Excel"
 
 COMMANDS = [
     ("start", "Главное меню"),
     ("status", "Мои документы"),
+]
+# Юрист видит в меню и свои команды
+LAWYER_COMMANDS = COMMANDS + [
+    ("clients", "Клиенты и их документы"),
+    ("export", "Выгрузка в Excel"),
 ]
 
 # ---------- регистрация ----------
@@ -81,6 +92,16 @@ DOC_ACCEPTED = "✅ Юрист принял документ: <b>{title}</b>"
 DOC_REJECTED = "❌ Документ нужно прислать заново: <b>{title}</b>\n\nКомментарий юриста: {comment}"
 ALL_DONE = "🎉 Все документы собраны и проверены! Юрист свяжется с вами насчёт следующих шагов."
 
+# ---------- напоминания ----------
+
+REMINDER = (
+    "👋 Напоминаю про документы для банкротства.\n\n"
+    "Осталось:\n{items}\n\n"
+    "Чем быстрее соберём всё, тем быстрее юрист подаст заявление в суд."
+)
+UNSUBMITTED = "Вы прислали файлы, но не отправили их юристу — он их пока не видит. Нажмите кнопку:"
+UNSORTED_REMINDER = "У вас есть файлы без пометки — юрист их не видит. К какому документу они относятся?"
+
 # ---------- сторона юриста ----------
 
 NEW_SUBMISSION = (
@@ -103,29 +124,103 @@ REJECT_CANCELLED = "Отменено. Кнопки под документом �
 ALREADY_PROCESSED = "Этот документ уже обработан"
 CLIENT_COMPLETE = "🎉 {name}: все документы собраны."
 
+NO_CLIENTS = "Пока ни один клиент не прошёл регистрацию."
+CLIENTS_HEADER = (
+    "👥 <b>Клиенты: {count}</b>\n\n"
+    "Сверху — у кого есть документы на проверке (🕓). Нажмите на клиента, чтобы открыть карточку."
+)
+CLIENTS_TRUNCATED = "\n\nПоказаны первые {shown}. Полный список — в выгрузке Excel."
+CLIENT_CARD = (
+    "👤 <b>{name}</b>\n"
+    "📞 {phone}\n"
+    "В боте с {created}\n"
+    "Последняя активность: {activity}\n"
+    "Напоминаний без ответа: {reminders}\n\n"
+)
+CLIENT_CARD_FILES_HINT = "\n\nКнопки ниже — документы, по которым есть файлы."
+REMINDER_SENT = "Напоминание отправлено"
+REMINDER_FAILED = "Не удалось отправить — возможно, клиент заблокировал бота"
+NOTHING_TO_REMIND = "У клиента всё собрано — напоминать не о чем"
+EXPORT_CAPTION = "📊 Документы клиентов на {date}"
+EXPORT_FILENAME = "Документы клиентов {date}.xlsx"
+
 # ---------- статус ----------
 
 ICONS = {None: "⬜", "review": "🕓", "accepted": "✅", "rejected": "❌", "na": "➖"}
 STATUS_LEGEND = "\n\n⬜ нужно прислать  🕓 на проверке  ✅ принят  ❌ вернули  ➖ нет документа"
+
+# ---------- Excel ----------
+
+EXPORT_SHEET = "Документы"
+EXPORT_HEADERS = ["Клиент", "Телефон", "Последняя активность", "Готово"]
+STATUS_LABELS = {
+    None: "не прислан",
+    "review": "на проверке",
+    "accepted": "принят",
+    "rejected": "вернули",
+    "na": "нет документа",
+}
+EXPORT_COMMENT_AUTHOR = "Юрист"
+
+
+def fmt_time(iso: str | None) -> str:
+    """Дата из базы (UTC) → время фирмы: 24.09.2026 18:30."""
+    if not iso:
+        return "—"
+    return datetime.fromisoformat(iso).astimezone(TIMEZONE).strftime("%d.%m.%Y %H:%M")
 
 
 def status_text(statuses: dict) -> str:
     """Чек-лист клиента с иконками статусов и полосой прогресса."""
     lines = []
     for item in CHECKLIST:
-        row = statuses.get(item["id"])
-        status = row["status"] if row else None
+        status = status_of(statuses, item["id"])
         line = f"{ICONS[status]} {escape(item['title'])}"
         if status is None and not item["required"]:
             line += " <i>(при наличии)</i>"
-        if status == "rejected" and row["comment"]:
-            line += f"\n      ↳ <i>{escape(row['comment'])}</i>"
+        if status == "rejected" and statuses[item["id"]]["comment"]:
+            line += f"\n      ↳ <i>{escape(statuses[item['id']]['comment'])}</i>"
         lines.append(line)
 
     done, total = progress(statuses)
     filled = round(10 * done / total)
     header = f"<b>Готово {done} из {total}</b>  {'▓' * filled}{'░' * (10 - filled)}\n\n"
     return header + "\n".join(lines) + STATUS_LEGEND
+
+
+def reminder_text(statuses: dict) -> str:
+    """Напоминание со списком того, что ещё не прислано или возвращено."""
+    lines = []
+    for item in CHECKLIST:
+        status = status_of(statuses, item["id"])
+        if status not in (None, "rejected"):
+            continue
+        line = f"{ICONS[status]} {escape(item['title'])}"
+        if status == "rejected" and statuses[item["id"]]["comment"]:
+            line += f" — вернули: <i>{escape(statuses[item['id']]['comment'])}</i>"
+        elif not item["required"]:
+            line += " <i>(при наличии)</i>"
+        lines.append(line)
+    return REMINDER.format(items="\n".join(lines))
+
+
+def client_label(client, statuses: dict) -> str:
+    """Подпись кнопки клиента в списке: «Иванов Иван Иванович — 4/12 · 🕓2»."""
+    done, total = progress(statuses)
+    label = f"{client['full_name']} — {done}/{total}"
+    waiting = in_review(statuses)
+    return f"{label} · 🕓{waiting}" if waiting else label
+
+
+def client_card(client, statuses: dict, has_files: bool) -> str:
+    text = CLIENT_CARD.format(
+        name=escape(client["full_name"]),
+        phone=escape(client["phone"]),
+        created=fmt_time(client["created_at"]),
+        activity=fmt_time(client["last_activity_at"]),
+        reminders=client["reminders_sent"],
+    ) + status_text(statuses)
+    return text + CLIENT_CARD_FILES_HINT if has_files else text
 
 
 def upload_prompt(item: dict) -> str:
