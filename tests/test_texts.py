@@ -42,6 +42,7 @@ def test_reminder_lists_only_missing_and_rejected():
 def test_bot_descriptions_fit_telegram_limits():
     for text in (texts.DESCRIPTION, texts.DEMO_DESCRIPTION):
         assert len(text) <= 512
+        assert "\n\n" not in text, "Telegram Desktop покажет пустую строку двойным пробелом"
     for text in (texts.SHORT_DESCRIPTION, texts.DEMO_SHORT_DESCRIPTION):
         assert len(text) <= 120
 
