@@ -1,0 +1,257 @@
+"""Сторона клиента: регистрация, приём файлов, статус."""
+from html import escape
+
+from aiogram import Bot, F, Router
+from aiogram.filters import Command, CommandStart, Filter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, Message
+
+from bot import db, keyboards as kb, texts
+from bot.checklist import BY_ID
+from bot.handlers.lawyer import notify_lawyers
+
+router = Router()
+
+
+class Upload(StatesGroup):
+    files = State()  # клиент выбрал документ и присылает файлы; в данных — doc_id
+
+
+# ---------- этапы регистрации ----------
+# Этап вычисляется по базе, а не хранится в памяти бота:
+# после перезапуска клиент продолжит с того же места.
+
+def client_stage(client) -> str:
+    if client is None:
+        return "new"
+    if client["consent_at"] is None:
+        return "consent"
+    if client["full_name"] is None:
+        return "name"
+    if client["phone"] is None:
+        return "phone"
+    return "ready"
+
+
+class Stage(Filter):
+    """Пропускает сообщение, только если клиент на нужном этапе,
+    и передаёт обработчику строку клиента из базы в параметре client."""
+
+    def __init__(self, stage: str):
+        self.stage = stage
+
+    async def __call__(self, event: Message | CallbackQuery) -> bool | dict:
+        client = db.get_client(event.from_user.id)
+        if client_stage(client) != self.stage:
+            return False
+        return {"client": client}
+
+
+async def ask_next_step(message: Message, client) -> None:
+    """Показывает клиенту то, что ему нужно сделать сейчас."""
+    stage = client_stage(client)
+    if stage == "new":
+        await message.answer(texts.NEED_START)
+    elif stage == "consent":
+        await message.answer(texts.START, reply_markup=kb.consent())
+    elif stage == "name":
+        await message.answer(texts.ASK_NAME)
+    elif stage == "phone":
+        await message.answer(texts.ASK_PHONE, reply_markup=kb.share_phone())
+    else:
+        await message.answer(texts.UNKNOWN, reply_markup=kb.main_menu())
+
+
+@router.message(CommandStart())
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
+    db.create_client(message.from_user.id)
+    client = db.get_client(message.from_user.id)
+    if client_stage(client) == "ready":
+        statuses = db.get_statuses(client["id"])
+        await message.answer(texts.WELCOME_BACK + texts.status_text(statuses), reply_markup=kb.main_menu())
+    else:
+        await ask_next_step(message, client)
+
+
+@router.callback_query(Stage("consent"), F.data == "consent")
+async def on_consent(callback: CallbackQuery):
+    db.set_consent(callback.from_user.id)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.answer()
+    await ask_next_step(callback.message, db.get_client(callback.from_user.id))
+
+
+@router.message(Stage("name"), F.text, ~F.text.startswith("/"))
+async def on_name(message: Message):
+    full_name = " ".join(message.text.split())
+    parts = full_name.split(" ")
+    if len(parts) < 2 or len(full_name) > 100 or not all(p.replace("-", "").isalpha() for p in parts):
+        await message.answer(texts.NAME_INVALID)
+        return
+    db.set_name(message.from_user.id, full_name)
+    await ask_next_step(message, db.get_client(message.from_user.id))
+
+
+@router.message(Stage("phone"), F.contact)
+async def on_phone(message: Message):
+    # Кнопка «Поделиться номером» присылает контакт самого пользователя.
+    # Если прислали чужой контакт из записной книжки — не принимаем.
+    if message.contact.user_id != message.from_user.id:
+        await message.answer(texts.PHONE_NOT_OWN)
+        return
+    phone = message.contact.phone_number
+    db.set_phone(message.from_user.id, phone if phone.startswith("+") else "+" + phone)
+    await message.answer(texts.REGISTERED + texts.status_text({}), reply_markup=kb.main_menu())
+    await message.answer(texts.PHOTO_RULES)
+
+
+# ---------- меню ----------
+
+@router.message(Stage("ready"), Command("status"))
+@router.message(Stage("ready"), F.text == texts.BTN_STATUS)
+async def show_status(message: Message, client):
+    await message.answer(texts.status_text(db.get_statuses(client["id"])))
+
+
+@router.message(F.text == texts.BTN_RULES)
+async def show_rules(message: Message):
+    await message.answer(texts.PHOTO_RULES)
+
+
+@router.message(Stage("ready"), F.text == texts.BTN_SEND)
+async def choose_document(message: Message, client, state: FSMContext):
+    await state.clear()
+    markup = kb.documents(db.get_statuses(client["id"]), action="upload")
+    if not markup.inline_keyboard:
+        await message.answer(texts.NOTHING_TO_SEND)
+        return
+    await message.answer(texts.CHOOSE_DOC, reply_markup=markup)
+
+
+# ---------- приём файлов ----------
+
+def file_info(message: Message) -> tuple[str, str, str, str | None]:
+    """file_id, file_unique_id, вид и имя файла из сообщения с фото или документом."""
+    if message.photo:
+        photo = message.photo[-1]  # Telegram присылает несколько размеров, берём самый большой
+        return photo.file_id, photo.file_unique_id, "photo", None
+    doc = message.document
+    return doc.file_id, doc.file_unique_id, "document", doc.file_name
+
+
+_last_album: dict[int, str] = {}  # user_id → media_group_id последнего альбома
+
+
+def is_first_in_album(message: Message) -> bool:
+    """Альбом из 10 фото приходит как 10 отдельных сообщений.
+    Отвечаем только на первое, чтобы не засыпать клиента одинаковыми ответами."""
+    album = message.media_group_id
+    if album is None:
+        return True
+    if _last_album.get(message.from_user.id) == album:
+        return False
+    _last_album[message.from_user.id] = album
+    return True
+
+
+@router.callback_query(Stage("ready"), kb.DocCallback.filter(F.action.in_({"upload", "resend"})))
+async def start_upload(callback: CallbackQuery, callback_data: kb.DocCallback, state: FSMContext):
+    item = BY_ID.get(callback_data.doc_id)
+    if item is None:  # документ убрали из checklist.json, а кнопка осталась
+        await callback.answer(texts.STALE_BUTTON)
+        return
+    await state.set_state(Upload.files)
+    await state.update_data(doc_id=item["id"])
+    if callback_data.action == "upload":
+        # список документов заменяем подсказкой
+        await callback.message.edit_text(texts.upload_prompt(item), reply_markup=kb.upload(item))
+    else:
+        # сообщение о возврате оставляем — в нём комментарий юриста
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.answer(texts.upload_prompt(item), reply_markup=kb.upload(item))
+    await callback.answer()
+
+
+@router.message(Stage("ready"), Upload.files, F.photo | F.document)
+async def receive_file(message: Message, client, state: FSMContext):
+    doc_id = (await state.get_data())["doc_id"]
+    saved = db.add_file(client["id"], doc_id, *file_info(message))
+    if not is_first_in_album(message):
+        return
+    if saved or message.media_group_id:
+        await message.answer(texts.FILE_RECEIVED, reply_markup=kb.upload(BY_ID[doc_id]))
+    else:
+        await message.answer(texts.FILE_DUPLICATE)
+
+
+@router.callback_query(Stage("ready"), Upload.files, F.data == "upload:done")
+async def finish_upload(callback: CallbackQuery, client, state: FSMContext, bot: Bot):
+    doc_id = (await state.get_data())["doc_id"]
+    count = db.count_files(client["id"], doc_id)
+    if count == 0:
+        await callback.answer(texts.NO_FILES_YET, show_alert=True)
+        return
+
+    await state.clear()
+    db.set_status(client["id"], doc_id, "review")
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.answer()
+    await callback.message.answer(
+        texts.SUBMITTED.format(title=escape(BY_ID[doc_id]["title"]), count=texts.files_count(count))
+    )
+    await notify_lawyers(bot, client, doc_id, count)
+
+
+@router.callback_query(Stage("ready"), Upload.files, F.data == "upload:na")
+async def mark_not_applicable(callback: CallbackQuery, client, state: FSMContext):
+    doc_id = (await state.get_data())["doc_id"]
+    await state.clear()
+    db.archive_files(client["id"], doc_id)
+    db.set_status(client["id"], doc_id, "na")
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.answer()
+    await callback.message.answer(texts.MARKED_NA.format(title=escape(BY_ID[doc_id]["title"])))
+
+
+@router.message(Stage("ready"), F.photo | F.document)
+async def receive_unsorted(message: Message, client):
+    """Файл прислали, не выбрав документ. Сохраняем без пункта и спрашиваем, что это."""
+    db.add_file(client["id"], None, *file_info(message))
+    if is_first_in_album(message):
+        markup = kb.documents(db.get_statuses(client["id"]), action="assign")
+        await message.answer(texts.UNSORTED_ASK, reply_markup=markup)
+
+
+@router.callback_query(Stage("ready"), kb.DocCallback.filter(F.action == "assign"))
+async def assign_unsorted(callback: CallbackQuery, callback_data: kb.DocCallback, client, bot: Bot):
+    item = BY_ID.get(callback_data.doc_id)
+    if item is None:
+        await callback.answer(texts.STALE_BUTTON)
+        return
+    if db.assign_unsorted(client["id"], item["id"]) == 0:
+        await callback.answer(texts.NOTHING_TO_ASSIGN)
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return
+
+    db.set_status(client["id"], item["id"], "review")
+    count = db.count_files(client["id"], item["id"])
+    await callback.message.edit_text(texts.ASSIGNED.format(title=escape(item["title"]), count=texts.files_count(count)))
+    await callback.answer()
+    await notify_lawyers(bot, client, item["id"], count)
+
+
+# ---------- всё остальное ----------
+
+@router.message()
+async def fallback(message: Message, state: FSMContext):
+    if await state.get_state() == Upload.files:
+        await message.answer(texts.EXPECT_FILE)
+        return
+    await ask_next_step(message, db.get_client(message.from_user.id))
+
+
+@router.callback_query()
+async def stale_button(callback: CallbackQuery):
+    await callback.answer(texts.STALE_BUTTON)
