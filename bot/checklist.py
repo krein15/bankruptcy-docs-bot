@@ -7,8 +7,9 @@ from bot.config import BASE_DIR
 DONE_STATUSES = ("accepted", "na")
 
 
-def _load() -> list[dict]:
-    with open(BASE_DIR / "checklist.json", encoding="utf-8") as f:
+def load(path=BASE_DIR / "checklist.json") -> list[dict]:
+    """Читает и проверяет список документов. Ошибка в файле — бот не запустится и скажет, что не так."""
+    with open(path, encoding="utf-8") as f:
         items = json.load(f)
 
     ids = [item.get("id") for item in items]
@@ -26,7 +27,7 @@ def _load() -> list[dict]:
     return items
 
 
-CHECKLIST = _load()
+CHECKLIST = load()
 BY_ID = {item["id"]: item for item in CHECKLIST}
 
 
