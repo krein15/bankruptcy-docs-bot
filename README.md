@@ -1,5 +1,14 @@
 <div align="center">
 
+<a href="https://kreinstudio.ru/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-dark@2x.png">
+    <img src="assets/brand/logo-light@2x.png" alt="krein — студия разработки" width="260">
+  </picture>
+</a>
+
+<br>
+
 # Бот для сбора документов на банкротство физлиц
 
 **Telegram-бот для юридических фирм. Клиент присылает документы по чек-листу, бот следит за комплектностью и сам напоминает о недостающем, юрист проверяет каждый документ в один клик.**
